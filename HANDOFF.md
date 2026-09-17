@@ -103,11 +103,50 @@ docmem  --[ consulta: texto parcial → lista de términos relevantes ]-->  voic
 Regla: si `docmem` no está disponible, el dictado funciona igual con el glosario local.
 **Nunca bloquear el proyecto 1 esperando al proyecto 2.**
 
-## Setup pendiente (lo hace el dueño, no un agente)
+## Setup: HECHO y verificado (2026-09-16)
 
-1. Instalar `rustup` con toolchain **MSVC** en Windows. Hoy no hay Rust ni en WSL ni en Windows.
-2. Decidir si se crea el fork público en GitHub (cuenta `matop`) y se añade como `origin`.
-3. Verificar `BUILD.md` de upstream para requisitos adicionales de Windows.
+Toolchain instalado en Windows y build verde de punta a punta sobre upstream sin modificar.
+
+```
+VS BuildTools 2022 (workload VCTools) + Windows SDK 10.0.26100
+rustup 1.29.1   rustc/cargo 1.98.1   host: x86_64-pc-windows-msvc
+cmake 4.4.3     bun 1.4.2            glslc shaderc v2026.3
+VULKAN_SDK = C:\VulkanSDK\1.4.357.0
+```
+
+Resultado del build: `bun install` OK · frontend OK (2121 módulos) · `cargo build` OK en **7m03s**.
+Sale `src-tauri/target/debug/handy.exe` (~88 MB) y, junto a él, **`ggml-vulkan.dll`** — confirma que el
+backend Vulkan se compiló de verdad. También se generan variantes de CPU con dispatch en runtime
+(`ggml-cpu-icelake/cascadelake/skylakex/...`, las de AVX-512, que son las que tomará Zen 4).
+
+Remotes: `origin` = https://github.com/matop/voicetotext (fork público) · `upstream` = `cjpais/Handy`.
+
+**Pendiente de verificar: nunca se ha lanzado la app.** El build compila, pero no se ha corrido
+`bun run tauri dev` ni se ha dictado nada todavía.
+
+## Trampa que ya mordió una vez: el casing del path
+
+El directorio real en disco es **`C:\Proyectos`, con P mayúscula**. Windows no distingue mayúsculas, pero
+Vite sí: si se lanza el build desde `C:\proyectos\...` en minúscula, registra el módulo HTML proxy bajo una
+grafía y lo busca bajo la otra, y falla con:
+
+```
+[vite:html-inline-proxy] Could not load .../src/overlay/index.html?html-proxy&inline-css&index=0.css
+No matching HTML proxy module found
+```
+
+Se reconoce porque el propio mensaje mezcla `C:/Proyectos/` y `C:/proyectos/`. **No es un bug del proyecto.**
+→ Lanzar siempre desde `C:\Proyectos\voicetotext` con la grafía exacta del disco. Ojo especialmente al
+invocar por interop desde WSL, donde `/mnt/c/proyectos` funciona para todo lo demás y engaña.
+
+### Comandos de build (desde Windows, no desde WSL)
+
+```powershell
+cd C:\Proyectos\voicetotext
+bun install
+bun run tauri dev      # desarrollo
+bun run build          # solo frontend
+```
 
 ## Documentos
 
