@@ -45,22 +45,31 @@ Inspección de `src-tauri/src/` — 61 ficheros Rust, 144 TS/TSX:
 
 Conclusión: **la infraestructura entera está hecha.** El trabajo propio es casi todo la capa de contexto.
 
-## Hallazgo importante sobre Windows
+## Aceleración en Windows: asimetría entre los dos motores
 
-En `src-tauri/Cargo.toml`, bloque `[target.'cfg(windows)'.dependencies]`, upstream documenta que
-**ONNX Runtime en Windows es CPU-only a propósito**: quitaron `ort-directml` porque el ONNX Runtime
-precompilado de pyke se compila con baseline global `/arch:AVX2` y crasheaba al arrancar en CPUs
-pre-Haswell. Y `transcribe-cpp` solo tiene feature `metal` (macOS); **no hay Vulkan cableado**.
+Verificado en `src-tauri/Cargo.toml`:
 
-→ En Windows, **ambos motores corren en CPU**. Eso está bien: el Ryzen 7 8845HS tiene AVX-512 (Zen 4) y
-GGML lo explota. La idea de usar la iGPU Radeon 780M vía Vulkan **exige parchear `transcribe-cpp`** —
-es trabajo extra, no es un flag. **Deprioritizado**: primero medir CPU, que probablemente alcance.
+- **whisper.cpp (`transcribe-cpp`) SÍ tiene Vulkan en Windows x86_64.** El bloque
+  `[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]` lo activa con la feature `vulkan`.
+  → La **Radeon 780M se usa de fábrica**, sin parchear nada. `BUILD.md` lo confirma: el Vulkan SDK de
+  LunarG es un prerequisito de build en Windows (`vulkan-shaders-gen` necesita sus headers y `glslc`).
+- **ONNX Runtime (`transcribe-rs`, o sea Parakeet/Moonshine) es CPU-only en Windows, a propósito.**
+  Upstream quitó `ort-directml` porque el ONNX Runtime precompilado de pyke se compila con baseline global
+  `/arch:AVX2` y crasheaba al arrancar en CPUs pre-Haswell.
+
+**Consecuencia para el benchmark de la fase 1**: en este hardware Whisper corre con GPU y Parakeet solo con
+CPU. Eso inclina la balanza hacia Whisper más de lo que sugieren los benchmarks genéricos — que asumen
+Parakeet acelerado. Medirlos como van a correr de verdad, no como corren en el leaderboard.
+
+Nota de upstream: en Windows ARM64 no hay Vulkan (el generador de shaders no compila bajo MSVC ARM64) y
+se cae a un módulo CPU portable. No aplica acá, el target es x86_64.
 
 ## Lo que sí hay que construir
 
 Por orden. Ver `docs/proyecto/fase-1-mvp.md` para el razonamiento completo.
 
-1. **Build verde en Windows.** Instalar `rustup` MSVC en Windows, compilar, correr Handy tal cual.
+1. **Build verde en Windows.** Prerequisitos segun `BUILD.md`: VS Build Tools (C++), Rust stable MSVC,
+   **Bun**, **CMake en PATH** y **Vulkan SDK** de LunarG. Compilar y correr Handy tal cual antes de tocar nada.
    Nada de esto es testeable desde WSL2 — ver `docs/proyecto/target-and-hardware.md`.
 2. **Baseline medido.** Grabar audio propio real (español + inglés mezclados, jerga GDES, 1-3 min) y
    medir Whisper large-v3-turbo vs Parakeet TDT v3 **sobre ese audio**, no sobre benchmarks. Sin esto
