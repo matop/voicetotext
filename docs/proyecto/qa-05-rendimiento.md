@@ -1,0 +1,86 @@
+# QA #5, de dónde sale la latencia y qué la baja
+
+El usuario venía de Wispr Flow, que le daba buena latencia pero tenía un límite semanal de palabras.
+La pregunta era si se puede cerrar esa brecha en local. Este documento mide de dónde sale.
+
+## La brecha no es velocidad de modelo
+
+Los 904 ms de latencia media que registra Wispr Flow y los 2795 ms que mide el CLI local no miden lo
+mismo. Wispr sube el audio mientras el usuario habla, así que al soltar la tecla ya tiene casi todo
+transcrito y solo le queda el último fragmento. Handy con Whisper turbo espera a que el usuario termine y
+recién entonces procesa el audio entero.
+
+Con la media real de uso, 36 segundos por dictado:
+
+```
+Whisper turbo en Vulkan, por lotes    36 s / RTF 12   =  ~3.0 s de espera
+Wispr Flow                                               ~0.9 s
+```
+
+Igualar eso con un modelo más rápido exigiría RTF cercano a 40, que una iGPU no da. Si la transcripción
+ocurre mientras el usuario habla, la duración del dictado deja de importar y la espera pasa a ser casi
+constante. Sin viaje de red, el local puede quedar por debajo de los 904 ms.
+
+## Handy ya tiene el worker de streaming
+
+`managers/transcription.rs` tiene `start_stream`, recepción de frames en vivo y un handshake de
+`finalize`. `actions.rs:505` lo activa según `model_supports_streaming`, que sale del catálogo. No hay
+que escribir el mecanismo, solo usar un modelo que lo soporte.
+
+`whisper-large-v3-turbo` tiene `supports_streaming = false`. De los 8 modelos de streaming del catálogo,
+dos incluyen español:
+
+| modelo | idiomas | tamaño |
+|---|---|---|
+| Nemotron Streaming 3.5 | 28, incluye es | 716 MB |
+| Voxtral Mini 4B Realtime | 13, incluye es | 3.2 GB |
+
+**Sin medir todavía**: si Nemotron transcribe el español técnico del usuario tan bien como Whisper turbo.
+Es un modelo de 0.6B optimizado para latencia contra uno de 100 idiomas con mucho entrenamiento en
+español. Se puede ganar 2 segundos y perder calidad justo en el vocabulario que costó arreglar. Medirlo
+requiere micrófono, así que lo tiene que hacer el usuario.
+
+## Release contra debug, no es la palanca
+
+Todo lo medido hasta el QA #4 fue un build debug. Comparación en caliente, mejor de 4 corridas, Vulkan:
+
+| audio | debug | release |
+|---|---|---|
+| 19.68 s | 1646 ms, RTF 11.96 | 1490 ms, RTF 13.21 |
+| 33.99 s | 2641 ms, RTF 12.87 | 2684 ms, RTF 12.66 |
+
+Un 9% en el clip corto y nada en el largo, dentro del ruido. Era previsible: la inferencia vive en DLLs de
+C++ precompiladas, así que optimizar el Rust apenas toca el tiempo de transcripción.
+
+Un detalle lateral que sí importa: **el build release escribe `Transcription result: [REDACTED]` en los
+logs**, mientras el debug escribe el texto completo. Al distribuir, usar release también por eso.
+
+## Carga del modelo, una palanca gratis
+
+`model_unload_timeout` viene en `Min5` por defecto y cargar el modelo cuesta entre 800 y 1000 ms. El
+usuario dicta a ratos entre sesiones de código, así que cualquier pausa de más de 5 minutos le hace pagar
+ese segundo otra vez.
+
+```
+dictado de 36 s tras una pausa larga   ~900 ms de carga + ~2800 ms  =  ~3.7 s
+mismo dictado con el modelo cargado                        ~2800 ms  =  ~2.8 s
+```
+
+Poner `Unload Model` en `Never` cuesta memoria, el modelo Q8 ocupa uno o dos GB, y la máquina tiene 28.8
+GB. Es un cambio de un desplegable por casi un segundo.
+
+## El caso de audio corto sigue roto
+
+3.33 s de audio tardan 5975 ms, RTF 0.56, más lento que tiempo real, y producen texto basura en idiomas
+aleatorios. Ya estaba anotado en el QA #2. Para dictados cortos la autodetección de idioma se descarrila
+y además el coste fijo domina. Fijar el idioma en vez de autodetectar es el arreglo a probar.
+
+## Resumen de palancas, por relación valor y esfuerzo
+
+| palanca | ganancia | esfuerzo |
+|---|---|---|
+| Modelo con streaming | de ~3.0 s a casi constante | un click, calidad sin medir |
+| `Unload Model = Never` | ~0.9 s tras pausas | un desplegable |
+| Vulkan en vez de CPU | 3x, ya activo | ninguno |
+| Build release | 0 a 9% | ninguno, hacerlo igual por los logs |
+| Idioma fijo | arregla los dictados cortos | un desplegable, probar |
