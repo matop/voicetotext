@@ -165,16 +165,37 @@ El usuario pidió **vaciar `custom_words`** y dejar que los términos se redescu
 de sembrarlos a mano. `custom_words = []` ya está aplicado. Eso convierte el aprendizaje por corrección en
 el objetivo del producto, no en una mejora opcional.
 
-## Pregunta abierta que bloquea la decisión de modelo
+## Streaming confirmado, Nemotron es viable
 
-**¿El texto aparece en pantalla mientras el usuario habla con Nemotron, o solo al soltar la tecla?**
-Solo se puede responder mirando la app durante un dictado. De la respuesta dependen tres caminos:
+El usuario verificó dictando: **con Nemotron el texto aparece en pantalla mientras habla.** El worker de
+streaming funciona de punta a punta. Eso resuelve la brecha de latencia contra Wispr Flow sin escribir
+código.
 
-1. Si aparece, Nemotron vale la pena y lo que le falta, números a dígitos y puntuación, es post-proceso
-   construible.
-2. Si no aparece, Nemotron es solo un modelo por lotes más rápido y peor, y conviene volver a Whisper.
-3. En cualquier caso queda una tercera vía sin explorar: Nemotron para la vista previa en vivo y Whisper
-   para el texto final al soltar. Handy tiene las dos piezas pero no las combina.
+Lo que queda por decidir es cómo recuperar lo que Nemotron pierde. Dos caminos:
+
+1. Quedarse en Nemotron y construir el post-proceso que le falta: números hablados a dígitos y
+   restauración de puntuación. Los dígitos son un conversor de español a número, acotado y testeable.
+2. Dos pasadas: Nemotron para la vista previa en vivo mientras el usuario habla, Whisper para el texto
+   final al soltar la tecla. Handy tiene las dos piezas pero no las combina. Da lo mejor de ambos a costa
+   de cargar dos modelos en memoria.
+
+## Pedido del usuario: activar por click, sin teclado
+
+Lo que echa de menos de Wispr Flow es poder arrancar el dictado clickeando un overlay, sin tener las manos
+en el teclado para el atajo.
+
+Es factible y es trabajo chico. Lo verificado:
+
+- La ventana de overlay **ya acepta clicks**: `src/overlay/RecordingOverlay.tsx:190` tiene
+  `onClick={() => commands.cancelOperation()}`.
+- La ventana se crea con `focusable(false)`, `always_on_top(true)`, `decorations(false)` y
+  `skip_taskbar(true)` en `src-tauri/src/overlay.rs:417`. Clickearla **no roba el foco** del campo donde
+  el usuario va a escribir, que es justo lo que hace falta.
+- Ya existe `TranscribeAction` en `ACTION_MAP` (`src-tauri/src/actions.rs:468`), y el CLI trae
+  `--toggle-transcription` que se lo manda por IPC a la instancia viva.
+
+Falta: exponer un comando Tauri al frontend que dispare esa acción, y mantener el overlay visible en
+reposo, no solo durante la grabación. Hoy aparece al empezar a grabar.
 
 ## Siguiente alcance, el glosario que se construye solo
 
