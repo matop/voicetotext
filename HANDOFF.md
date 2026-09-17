@@ -1,155 +1,169 @@
-# HANDOFF — voicetotext (fork de Handy)
+# HANDOFF, voicetotext
 
-Documento de arranque. Si sos un agente o una persona que llega en frío a este repo, leé esto primero.
+Punto de entrada del repo. Si llegás en frío, leé esto entero antes de tocar nada.
+Última actualización: 2026-09-17.
 
 ## Qué es
 
-Fork de [Handy](https://github.com/cjpais/Handy) (MIT, ~31.8k ⭐, Rust/Tauri) para construir una app de
-dictado voz-a-texto **local** en Windows, especializada en **dictar prompts largos a agentes de IA**
-(T3, Claude, ChatGPT) con vocabulario técnico propio.
+Fork de [Handy](https://github.com/cjpais/Handy) (MIT, Rust/Tauri) para dictado de voz **local** en
+Windows, especializado en dictar prompts largos a agentes de IA.
 
-**Decisión cerrada: se forkea, no se reinventa.** No re-discutir esto.
+La tesis del producto, y esto ya no es una hipótesis sino un resultado medido: **el dictado en español
+falla sobre todo en vocabulario técnico inglés pronunciado con fonología española.** Un hispanohablante
+dice "prompt" y el ASR escribe `PRAMP`. Nadie resuelve eso hoy. Ver `docs/proyecto/qa-02-datos-reales.md`.
 
-## Estado del repo
+Dos restricciones que no se negocian:
 
-- Clonado de `cjpais/Handy` @ `ba10ce1` (2026-09-15). El remote se llama `upstream`, no `origin`.
-- **Todavía no existe fork en GitHub** ni remote `origin`. Pendiente de decisión del dueño.
-- Cero código propio escrito. Solo este handoff y `docs/proyecto/`.
+1. Privacidad por arquitectura. El camino por defecto no manda audio a ningún lado. Si alguna vez hay
+   nube, es opt-in explícito y visible en el momento.
+2. Contexto de negocio. No es transcripción cruda, conoce la jerga del usuario.
 
-## Regla de oro del fork
+## Estado actual
 
-**Minimizar el diff contra upstream.** Handy tiene commits casi a diario; si se puede seguir rebasando,
-se heredan mejoras gratis. Por eso:
+- 8 commits en la rama `proyecto/handoff`. **Todos son documentación y una herramienta aparte.**
+- **El código Rust y TypeScript tiene diff cero contra upstream.** Nada de la app está modificado.
+- Se probó un cambio de código y se revirtió. Ver `docs/proyecto/qa-03-hotfix-retirado.md`.
+- Hay un prototipo funcional del emparejador fonético en `tools/phonetic-es/`, sin integrar.
 
-- No editar `CLAUDE.md`, `AGENTS.md`, `README.md` ni ficheros existentes salvo necesidad real.
-- El trabajo propio va en módulos nuevos y en `docs/proyecto/`.
-- Cuando haya que tocar código upstream, tocar lo mínimo y dejarlo aislado tras una interfaz.
-
-## Lo que Handy YA resuelve (no reconstruir nada de esto)
-
-Inspección de `src-tauri/src/` — 61 ficheros Rust, 144 TS/TSX:
-
-| Necesidad | Ya está en | Nota |
-|---|---|---|
-| Captura de audio | `audio_toolkit/audio`, `cpal 0.16` | multiplataforma |
-| VAD | `audio_toolkit/vad`, `vad-rs` (fork de cjpais) | Silero |
-| ASR Whisper | `transcribe-cpp 0.2.3` | whisper.cpp |
-| ASR Parakeet/Moonshine | `transcribe-rs 0.3.8` (feature `onnx`) | ONNX Runtime |
-| Hotkey global | `shortcut/`, `tauri-plugin-global-shortcut`, `rdev` | |
-| Inyección de texto | `input.rs`, `enigo 0.6`, `secure_input.rs` | |
-| **Portapapeles transaccional** | **`paste_tx/`, `clipboard.rs`** | ya preserva/restaura el contenido previo |
-| **Overlay** | **`overlay.rs`** | el feedback visual ya existe |
-| **Historial persistente** | **`managers/history.rs`** | tiene `update_transcription()` ← el hook para aprender de correcciones |
-| **Cliente LLM** | **`llm_client.rs`** | `send_chat_completion_with_schema()`, post-proceso ya cableado |
-| Catálogo de modelos | `catalog/`, `managers/model/` | descarga y gestión |
-
-Conclusión: **la infraestructura entera está hecha.** El trabajo propio es casi todo la capa de contexto.
-
-## Aceleración en Windows: asimetría entre los dos motores
-
-Verificado en `src-tauri/Cargo.toml`:
-
-- **whisper.cpp (`transcribe-cpp`) SÍ tiene Vulkan en Windows x86_64.** El bloque
-  `[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]` lo activa con la feature `vulkan`.
-  → La **Radeon 780M se usa de fábrica**, sin parchear nada. `BUILD.md` lo confirma: el Vulkan SDK de
-  LunarG es un prerequisito de build en Windows (`vulkan-shaders-gen` necesita sus headers y `glslc`).
-- **ONNX Runtime (`transcribe-rs`, o sea Parakeet/Moonshine) es CPU-only en Windows, a propósito.**
-  Upstream quitó `ort-directml` porque el ONNX Runtime precompilado de pyke se compila con baseline global
-  `/arch:AVX2` y crasheaba al arrancar en CPUs pre-Haswell.
-
-**Consecuencia para el benchmark de la fase 1**: en este hardware Whisper corre con GPU y Parakeet solo con
-CPU. Eso inclina la balanza hacia Whisper más de lo que sugieren los benchmarks genéricos — que asumen
-Parakeet acelerado. Medirlos como van a correr de verdad, no como corren en el leaderboard.
-
-Nota de upstream: en Windows ARM64 no hay Vulkan (el generador de shaders no compila bajo MSVC ARM64) y
-se cae a un módulo CPU portable. No aplica acá, el target es x86_64.
-
-## Lo que sí hay que construir
-
-Por orden. Ver `docs/proyecto/fase-1-mvp.md` para el razonamiento completo.
-
-1. **Build verde en Windows.** Prerequisitos segun `BUILD.md`: VS Build Tools (C++), Rust stable MSVC,
-   **Bun**, **CMake en PATH** y **Vulkan SDK** de LunarG. Compilar y correr Handy tal cual antes de tocar nada.
-   Nada de esto es testeable desde WSL2 — ver `docs/proyecto/target-and-hardware.md`.
-2. **Baseline medido.** Grabar audio propio real (español + inglés mezclados, jerga GDES, 1-3 min) y
-   medir Whisper large-v3-turbo vs Parakeet TDT v3 **sobre ese audio**, no sobre benchmarks. Sin esto
-   cualquier elección de modelo es fe.
-3. **Enunciados largos.** El problema técnico real: Whisper usa ventanas de 30s y alucina en silencios.
-   Los prompts a agentes duran 1-3 minutos con pausas de pensamiento constantes. Calibrar la segmentación
-   por VAD; el default de Silero (silencio > 2s) se come esas pausas.
-4. **Glosario auto-aprendido.** Dos fuentes, ninguna pide configuración al usuario:
-   - Cosecha de identificadores de `/mnt/c/proyectos/*` (funciones, módulos, repos).
-   - Aprendizaje por corrección, enganchado a `HistoryManager::update_transcription()`.
-   Podar con TTS: descartar los términos que el ASR **ya acierta**; más hotwords empeoran el recall.
-5. **Biasing en decodificación.** `initial_prompt` / `hotwords`, recuperando solo los términos relevantes
-   por enunciado (el presupuesto es de ~224 tokens, no cabe un glosario entero).
-
-### Vocabulario real del usuario (semilla del glosario)
-
-De `/mnt/c/proyectos/`: `GDES`, `facturaGdes`, `middlewaregdes`, `guias-middleware`, `lgde-service`,
-`jwt-perfilamiento`, `backoffice-adapter`, `persistencia-redis`, `getParametros`, `email-worker`, NestJS.
-Estos son exactamente los términos que un ASV genérico destroza y que el LLM receptor **no puede adivinar**.
-
-## Contrato con el proyecto hermano (`docmem`)
-
-Este repo **no depende** de `docmem`. La fase 1 tiene su propio glosario local y se termina sola.
-
-Cuando `docmem` exista, se conecta por una interfaz estrecha y opcional:
+## Dónde vive todo
 
 ```
-docmem  --[ consulta: texto parcial → lista de términos relevantes ]-->  voicetotext
+C:\Proyectos\voicetotext          repo, ojo con la P mayuscula
+  origin    https://github.com/matop/voicetotext   (fork PUBLICO)
+  upstream  https://github.com/cjpais/Handy
 ```
 
-Regla: si `docmem` no está disponible, el dictado funciona igual con el glosario local.
-**Nunca bloquear el proyecto 1 esperando al proyecto 2.**
+El entorno de desarrollo es WSL2 pero **la app se compila y se prueba en Windows**. Desde WSL no se
+compila Tauri para Windows ni se prueban las APIs Win32.
 
-## Setup: HECHO y verificado (2026-09-16)
-
-Toolchain instalado en Windows y build verde de punta a punta sobre upstream sin modificar.
-
-```
-VS BuildTools 2022 (workload VCTools) + Windows SDK 10.0.26100
-rustup 1.29.1   rustc/cargo 1.98.1   host: x86_64-pc-windows-msvc
-cmake 4.4.3     bun 1.4.2            glslc shaderc v2026.3
-VULKAN_SDK = C:\VulkanSDK\1.4.357.0
-```
-
-Resultado del build: `bun install` OK · frontend OK (2121 módulos) · `cargo build` OK en **7m03s**.
-Sale `src-tauri/target/debug/handy.exe` (~88 MB) y, junto a él, **`ggml-vulkan.dll`** — confirma que el
-backend Vulkan se compiló de verdad. También se generan variantes de CPU con dispatch en runtime
-(`ggml-cpu-icelake/cascadelake/skylakex/...`, las de AVX-512, que son las que tomará Zen 4).
-
-Remotes: `origin` = https://github.com/matop/voicetotext (fork público) · `upstream` = `cjpais/Handy`.
-
-**Pendiente de verificar: nunca se ha lanzado la app.** El build compila, pero no se ha corrido
-`bun run tauri dev` ni se ha dictado nada todavía.
-
-## Trampa que ya mordió una vez: el casing del path
-
-El directorio real en disco es **`C:\Proyectos`, con P mayúscula**. Windows no distingue mayúsculas, pero
-Vite sí: si se lanza el build desde `C:\proyectos\...` en minúscula, registra el módulo HTML proxy bajo una
-grafía y lo busca bajo la otra, y falla con:
-
-```
-[vite:html-inline-proxy] Could not load .../src/overlay/index.html?html-proxy&inline-css&index=0.css
-No matching HTML proxy module found
-```
-
-Se reconoce porque el propio mensaje mezcla `C:/Proyectos/` y `C:/proyectos/`. **No es un bug del proyecto.**
-→ Lanzar siempre desde `C:\Proyectos\voicetotext` con la grafía exacta del disco. Ojo especialmente al
-invocar por interop desde WSL, donde `/mnt/c/proyectos` funciona para todo lo demás y engaña.
-
-### Comandos de build (desde Windows, no desde WSL)
+## Cómo levantarlo
 
 ```powershell
 cd C:\Proyectos\voicetotext
-bun install
-bun run tauri dev      # desarrollo
-bun run build          # solo frontend
+bun run tauri dev
 ```
 
-## Documentos
+Toolchain ya instalado y verificado: VS BuildTools 2022 con workload C++, Windows SDK 10.0.26100,
+rustup 1.29.1, rustc y cargo 1.98.1 con host `x86_64-pc-windows-msvc`, cmake 4.4.3, bun 1.4.2,
+Vulkan SDK 1.4.357 en `C:\VulkanSDK\1.4.357.0`.
 
-- `docs/proyecto/fase-1-mvp.md` — alcance de fase 1 y por qué el receptor-LLM cambia las prioridades.
-- `docs/proyecto/target-and-hardware.md` — hardware real y el workflow WSL2→Windows.
-- `docs/proyecto/research-landscape.md` — estado del arte, modelos, runtimes, capa de contexto.
+### Trampas que ya mordieron
+
+**El casing del path.** El directorio en disco es `C:\Proyectos` con P mayúscula. Windows no distingue
+mayúsculas pero Vite sí. Lanzar desde `C:\proyectos` en minúscula rompe el build con
+`[vite:html-inline-proxy] ... No matching HTML proxy module found`. Se reconoce porque el mensaje mezcla
+las dos grafías. Usar siempre la grafía exacta del disco.
+
+**`cargo build` no arranca la app.** Compila, pero el binario debug carga el frontend desde el dev server
+en `localhost:1420`. Lanzar el `.exe` solo muestra "can't reach this page". Usar `bun run tauri dev`.
+
+**El QA por clicks es peligroso.** `SetForegroundWindow` falla desde procesos en background, así que un
+click destinado a la app puede aterrizar en otra ventana del escritorio del usuario. Verificar el foco
+antes de cada click, o mejor, usar el CLI.
+
+## El CLI es un banco de pruebas completo
+
+No hace falta construir nada para medir. `handy.exe` ya trae:
+
+```
+--transcribe-file <WAV>   transcribe headless, 16 kHz mono, sin microfono ni VAD
+--device-index <N>        fuerza el dispositivo, 0 es Vulkan y 1 es CPU
+--list-devices            lista los dispositivos de computo
+--list-models             lista los 85 modelos del catalogo
+--repeat <N>              repite y reporta el mejor tiempo
+--json                    salida legible por maquina
+--debug                   log verboso
+```
+
+Vive en `src-tauri\target\debug\handy.exe`. Lee los settings del store, así que los cambios de glosario
+aplican sin relanzar la app.
+
+## Lo que Handy ya resuelve, no reconstruir
+
+| Necesidad | Dónde está |
+|---|---|
+| Captura de audio | `audio_toolkit/audio`, cpal |
+| VAD | `audio_toolkit/vad`, Silero |
+| Whisper y Parakeet | `transcribe-cpp` y `transcribe-rs` |
+| Hotkey global, con Auto, Hold y Toggle | `shortcut/` |
+| Inyección de texto y portapapeles transaccional | `input.rs`, `paste_tx/`, `clipboard.rs` |
+| Overlay en vivo | `overlay.rs` |
+| Historial persistente con audio | `managers/history.rs`, tiene `update_transcription()` |
+| Cliente LLM para post-proceso | `llm_client.rs` |
+| Glosario de usuario | `settings.custom_words` y `audio_toolkit/text.rs` |
+
+La infraestructura está entera. El trabajo propio es la capa de contexto en español.
+
+## Hallazgos de las cuatro sesiones de QA
+
+Detalle en `docs/proyecto/qa-0*.md`. Resumen de lo que cambia decisiones:
+
+**Vulkan gana claro.** La Radeon 780M hace 19.7 s de audio en 1775 ms, RTF 11.09. La CPU tarda 5433 ms,
+RTF 3.62. Texto idéntico. El RTF mejora con audio más largo porque el overhead fijo se amortiza.
+
+**Audio corto está roto.** 3.3 s tardan 8023 ms, más lento que tiempo real, y producen basura en idiomas
+aleatorios. La autodetección de idioma se descarrila con poco audio. Candidato a fijar idioma.
+
+**El glosario funciona, pero no escala.** Con 3 términos corrige `GDS` a `GDES` y `redis` a `Redis`. Con
+32 términos se pierden la mayúscula inicial, los acentos y toda la puntuación, y `Redis` sale en minúscula
+pese a estar en la lista. `custom_words.join(", ")` produce un prompt en forma de lista y el modelo imita
+ese estilo. La recuperación por enunciado es requisito, no optimización.
+
+**Las dos capas de corrección no se pueden sumar tal cual.** Upstream las hace excluyentes a propósito.
+Forzar que corran las dos rompe `middleware de` convirtiéndolo en `middlewaregdes`, y bajar el umbral a
+0.05 no lo evita porque el boost fonético de Soundex salta el umbral. Soundex no es solo insuficiente para
+el español, es perjudicial.
+
+**El TTS no sirve para evaluar calidad de ASR.** Todas las conclusiones de la primera sesión, hecha con voz
+sintética, se cayeron al repetirlas con voz real. Sirve para ejercitar el pipeline y poco más.
+
+**El uso real valida el alcance.** De 328 dictados previos del usuario en Wispr Flow: 89% en español, 81%
+dirigidos a un chat de agente de IA, media de 58 palabras y 36 segundos por dictado, máximo de 4 minutos.
+
+**Referencia del competidor.** Wispr Flow registra 904 ms de latencia media de punta a punta. El Vulkan
+local hace 34 s de audio en 2795 ms. Son unas 3 veces más rápidos, con GPU en la nube. En latencia pura,
+local no va a ganar.
+
+## Privacidad, leer antes de commitear
+
+**El fork es público en GitHub.** Los datos del usuario viven fuera del repo y así tiene que seguir:
+
+```
+private/          historial exportado de Wispr, backup de settings
+qa-audio/         audio de prueba, incluido qa-audio/real con su voz
+```
+
+Ambos están en `.gitignore`. Verificado que no hay nada de eso en el remoto, y que ni su email ni su
+vocabulario de negocio aparecen en los documentos publicados. Antes de cada push, revisar:
+
+```bash
+git ls-tree -r --name-only origin/proyecto/handoff | grep -E "^(private/|qa-audio/)"
+```
+
+## Siguiente alcance
+
+Portar `tools/phonetic-es/es_phonetic.py` a Rust, dentro de `audio_toolkit/text.rs`, **al lado de Soundex
+y no en su lugar**, eligiendo uno u otro según el idioma de la transcripción.
+
+El prototipo ya está medido contra 19 pares de corrección reales y 30628 n-gramas del corpus del usuario:
+
+| | aciertos | daño real |
+|---|---|---|
+| Soundex | 3/19 (16%) | 102 (0.333%) |
+| Fonética española | 7/19 (37%) | 46 (0.150%) |
+
+Mejor en los dos ejes. Lleva las tres guardas que hicieron falta: palabras funcionales, doble umbral con
+léxico español, y n-gramas que ya contienen el término.
+
+Criterio de aceptación del port: reproducir esos números desde Rust. Si los reproduce, recién entonces
+reabrir la pregunta del QA #3 sobre correr la capa difusa además del prompt, que con este emparejador
+puede tener otra respuesta.
+
+Después de eso, por orden de valor:
+
+1. Ampliar `custom_words` de `Vec<String>` a algo como `{phrase, replacement, frequency, source}`. Sin eso
+   no se puede aprender de correcciones ni medir mejora.
+2. Enganchar el aprendizaje automático a `HistoryManager::update_transcription()`. Wispr Flow ya valida el
+   mecanismo: 18 de sus 24 entradas de diccionario se aprendieron solas de las correcciones del usuario.
+3. Recuperación por enunciado para el `initial_prompt`, en vez de meter todos los términos.
+4. Arreglar el caso de audio corto.
