@@ -145,8 +145,8 @@ sesión: verificar el foco antes de cada click, o usar un escritorio/sesión apa
 ## Siguientes pasos que sugiere este QA
 
 1. Confirmar con log que `custom_words_already_prompted` es `true` en la ruta Whisper.
-2. **Fix candidato (pequeño y de alto valor)**: ejecutar `apply_custom_words` *además* del prompt, no en
-   lugar de. Es el primer aporte real del fork.
+2. ~~**Fix candidato**: ejecutar `apply_custom_words` además del prompt.~~ **RETIRADO — se probó y falla.
+   Ver `qa-03-hotfix-retirado.md`.**
 3. Matching fonético para español, reemplazando o complementando Soundex.
 4. Recuperación por enunciado para el `initial_prompt` en vez de `join(", ")`.
 5. **Repetir todo con audio real grabado por el usuario.** Nada de lo anterior es concluyente sin eso.
