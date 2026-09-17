@@ -20,7 +20,7 @@ Dos restricciones que no se negocian:
 
 ## Estado actual
 
-- 8 commits en la rama `proyecto/handoff`. **Todos son documentación y una herramienta aparte.**
+- 11 commits en la rama `proyecto/handoff`. **Todos son documentación y una herramienta aparte.**
 - **El código Rust y TypeScript tiene diff cero contra upstream.** Nada de la app está modificado.
 - Se probó un cambio de código y se revirtió. Ver `docs/proyecto/qa-03-hotfix-retirado.md`.
 - Hay un prototipo funcional del emparejador fonético en `tools/phonetic-es/`, sin integrar.
@@ -120,9 +120,28 @@ sintética, se cayeron al repetirlas con voz real. Sirve para ejercitar el pipel
 **El uso real valida el alcance.** De 328 dictados previos del usuario en Wispr Flow: 89% en español, 81%
 dirigidos a un chat de agente de IA, media de 58 palabras y 36 segundos por dictado, máximo de 4 minutos.
 
-**Referencia del competidor.** Wispr Flow registra 904 ms de latencia media de punta a punta. El Vulkan
-local hace 34 s de audio en 2795 ms. Son unas 3 veces más rápidos, con GPU en la nube. En latencia pura,
-local no va a ganar.
+**La latencia es arquitectura, no velocidad de modelo.** Wispr transcribe mientras el usuario habla, el
+local espera y procesa todo al final. Handy ya trae el worker de streaming en `managers/transcription.rs`,
+activado por `model_supports_streaming` en `actions.rs:505`. Whisper turbo no lo soporta, Nemotron
+Streaming 3.5 sí. Detalle en `docs/proyecto/qa-05-rendimiento.md`.
+
+**Nemotron es 4 veces más rápido y peor en lo que importa.** Sobre el mismo audio real:
+
+| | Whisper turbo | Nemotron Streaming |
+|---|---|---|
+| 30.9 s de audio | 2808 ms, RTF 11.00 | **692 ms, RTF 44.65** |
+| números hablados | `404`, `500`, `30 minutos` | `cuatrocientos cuatro`, `quinientos` |
+| puntuación | cuatro frases con punto | ninguna |
+| jerga | `GDES`, `JWT`, `deploy`, `backoffice` | `jedes`, `jota WDT`, `diploy`, `back office` |
+| defecto propio | alucina colas en otro idioma, `È chiaro` | parte palabras compuestas |
+
+**El bug de sobre-corrección está vivo con Nemotron.** Whisper recibe el glosario como `initial_prompt` y
+por eso `apply_custom_words` se salta. Nemotron no soporta `InitialPrompt`, así que la pasada difusa corre
+y con ella el fallo del QA #3. Hoy, con Nemotron, un glosario poblado empeora la transcripción.
+
+**Release contra debug no es palanca**, 9% en clips cortos y nada en largos, porque la inferencia vive en
+DLLs precompiladas. Pero conviene release igual: redacta el texto transcrito en los logs, el debug lo
+escribe entero.
 
 ## Privacidad, leer antes de commitear
 
@@ -140,9 +159,31 @@ vocabulario de negocio aparecen en los documentos publicados. Antes de cada push
 git ls-tree -r --name-only origin/proyecto/handoff | grep -E "^(private/|qa-audio/)"
 ```
 
-## Siguiente alcance
+## Decisión del usuario sobre el glosario
 
-Portar `tools/phonetic-es/es_phonetic.py` a Rust, dentro de `audio_toolkit/text.rs`, **al lado de Soundex
+El usuario pidió **vaciar `custom_words`** y dejar que los términos se redescubran solos con el uso, en vez
+de sembrarlos a mano. `custom_words = []` ya está aplicado. Eso convierte el aprendizaje por corrección en
+el objetivo del producto, no en una mejora opcional.
+
+## Pregunta abierta que bloquea la decisión de modelo
+
+**¿El texto aparece en pantalla mientras el usuario habla con Nemotron, o solo al soltar la tecla?**
+Solo se puede responder mirando la app durante un dictado. De la respuesta dependen tres caminos:
+
+1. Si aparece, Nemotron vale la pena y lo que le falta, números a dígitos y puntuación, es post-proceso
+   construible.
+2. Si no aparece, Nemotron es solo un modelo por lotes más rápido y peor, y conviene volver a Whisper.
+3. En cualquier caso queda una tercera vía sin explorar: Nemotron para la vista previa en vivo y Whisper
+   para el texto final al soltar. Handy tiene las dos piezas pero no las combina.
+
+## Siguiente alcance, el glosario que se construye solo
+
+Tres pasos en este orden, los tres tocan `audio_toolkit/text.rs` y el modelo de datos de settings.
+
+**Uno, arreglar la sobre-corrección.** Ya no es una mejora, es urgente: con Nemotron rompe texto en cada
+dictado. El matcher de n-gramas consume secuencias correctas como "middleware de". Ver `qa-03`.
+
+**Dos, portar el emparejador fonético.** `tools/phonetic-es/es_phonetic.py` a Rust, **al lado de Soundex
 y no en su lugar**, eligiendo uno u otro según el idioma de la transcripción.
 
 El prototipo ya está medido contra 19 pares de corrección reales y 30628 n-gramas del corpus del usuario:
@@ -159,11 +200,15 @@ Criterio de aceptación del port: reproducir esos números desde Rust. Si los re
 reabrir la pregunta del QA #3 sobre correr la capa difusa además del prompt, que con este emparejador
 puede tener otra respuesta.
 
-Después de eso, por orden de valor:
+**Tres, aprender de las correcciones.** Ampliar `custom_words` de `Vec<String>` a algo como
+`{phrase, replacement, frequency, source}` y engancharlo a `HistoryManager::update_transcription()`.
+Wispr Flow ya valida el mecanismo: 18 de sus 24 entradas de diccionario se aprendieron solas observando
+las correcciones del usuario. Esto es lo que el usuario pidió explícitamente.
 
-1. Ampliar `custom_words` de `Vec<String>` a algo como `{phrase, replacement, frequency, source}`. Sin eso
-   no se puede aprender de correcciones ni medir mejora.
-2. Enganchar el aprendizaje automático a `HistoryManager::update_transcription()`. Wispr Flow ya valida el
-   mecanismo: 18 de sus 24 entradas de diccionario se aprendieron solas de las correcciones del usuario.
-3. Recuperación por enunciado para el `initial_prompt`, en vez de meter todos los términos.
-4. Arreglar el caso de audio corto.
+Después, por orden de valor:
+
+1. Recuperación por enunciado para el `initial_prompt`, en vez de meter todos los términos. Medido: con 32
+   términos se pierden mayúsculas, acentos y puntuación.
+2. Números hablados a dígitos, si se adopta Nemotron. Whisper lo hace nativo y Nemotron no.
+3. Arreglar el caso de audio corto, 3.3 s tardan 6 s y alucinan en idiomas aleatorios.
+4. `Unload Model = Never`, un desplegable por casi un segundo tras cada pausa.
