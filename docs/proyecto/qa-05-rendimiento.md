@@ -75,6 +75,67 @@ GB. Es un cambio de un desplegable por casi un segundo.
 aleatorios. Ya estaba anotado en el QA #2. Para dictados cortos la autodetección de idioma se descarrila
 y además el coste fijo domina. Fijar el idioma en vez de autodetectar es el arreglo a probar.
 
+## Nemotron medido contra Whisper turbo
+
+Ambos modelos instalados, Vulkan, mejor de 3 corridas, sobre los audios reales del usuario.
+
+| | Whisper turbo | Nemotron Streaming 3.5 |
+|---|---|---|
+| 19.7 s de audio | 1640 ms, RTF 12.00 | **498 ms, RTF 39.52** |
+| 34.0 s de audio | 2635 ms, RTF 12.90 | **787 ms, RTF 43.19** |
+| 9.5 s de audio | 1268 ms, RTF 7.52 | **273 ms, RTF 34.95** |
+| carga del modelo | ~810 ms | ~670 ms |
+
+Nemotron es 3.3 veces más rápido y llega a RTF 40, que era el número necesario para igualar a Wispr Flow.
+Y esto es todavía por lotes, sin usar su capacidad de streaming.
+
+El precio está en el vocabulario técnico:
+
+| dicho | Whisper turbo | Nemotron |
+|---|---|---|
+| GDES | `GDES` | `Jedes`, `Heads` |
+| JWT | `JWT` | `JDT` |
+| deploy | `deploy` | `diploy` |
+| cuatrocientos cuatro | `404` | `cuatrocientos cuatro` |
+| "bueno, a ver" | pierde "a ver" | lo conserva |
+
+Nemotron no convierte números hablados a dígitos, y eso importa dictando a un agente.
+
+### El glosario le hace daño a Nemotron, no al revés
+
+Whisper recibe los términos como `initial_prompt` y por eso `apply_custom_words` se salta. Nemotron no
+soporta `InitialPrompt`, así que la pasada difusa **sí corre**, y con ella el bug de sobre-corrección del
+QA #3 pasa de dormido a activo.
+
+Medido con los mismos audios:
+
+| | con glosario de 3 términos | con glosario vacío |
+|---|---|---|
+| | `refactor del middlewaregdes guías` | `refactor del middleware de guías` |
+| | `the GDES Middlewaregdes` | `the guides Middleware Service` |
+
+**Hoy, usando Nemotron, el glosario empeora la transcripción.** Conviene vaciarlo mientras se prueba ese
+modelo, hasta que el emparejador fonético esté portado.
+
+### El emparejador fonético recupera parte de sus errores
+
+Los fallos propios de Nemotron son justo del tipo que ataca `tools/phonetic-es`. Pasados por el prototipo:
+
+```
+✓ JDT    -> JWT      score 0.33
+✓ diploy -> deploy   score 0.00
+✗ Jedes  -> GDES     rechazado
+✗ Heads  -> GDES     empareja mal con otro termino
+```
+
+Dos de cinco. Ayuda, pero no rescata solo el problema de jerga.
+
+### Lo que esto cambia en el orden de trabajo
+
+Arreglar la sobre-corrección deja de ser una mejora y pasa a ser urgente. Con Whisper el bug estaba
+dormido porque la pasada difusa se saltaba. Con Nemotron está activo y destruyendo texto correcto en cada
+dictado.
+
 ## Resumen de palancas, por relación valor y esfuerzo
 
 | palanca | ganancia | esfuerzo |
