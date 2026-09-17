@@ -46,3 +46,4 @@ result
 # Python bytecode (scripts/)
 __pycache__/
 qa-audio/
+private/
