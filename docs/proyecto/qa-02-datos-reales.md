@@ -126,6 +126,30 @@ Nota sobre el modelo de datos: el `custom_words: Vec<String>` de upstream **solo
 `replacement`, sin frecuencia y sin origen. Para aprender de correcciones hace falta ampliarlo a algo como
 `{phrase, replacement, frequency, source, last_used}`. Es el primer cambio de esquema del fork.
 
+## Experimento: el glosario no escala (medido)
+
+Se midió el mismo WAV real con tres tamaños de glosario, todo lo demás igual:
+
+| glosario | salida |
+|---|---|
+| **0 términos** | `...repo middleware GDS ... antes del deploy. El endpoint ... adapter.` |
+| **3 términos** | `...repo middleware GDES ... antes del deploy. El endpoint ... tirando un timeout ... adapter.` |
+| **32 términos** | `necesito ... middleware de guias ... GDES ... antes del deploy el endpoint ... adapter` |
+
+Con 32 términos se degrada de forma medible:
+- se pierde la **mayúscula inicial** de la frase,
+- se pierde el **acento** de "guías",
+- se pierde **toda la puntuación** (con 3 términos había puntos),
+- y `Redis`, que estaba en la lista de 32, salió **en minúscula** — cuando con 3 términos salía correcto.
+
+**Añadir términos rompió un término que ya funcionaba.** Es el efecto distractor descrito en la literatura:
+`custom_words.join(", ")` produce un prompt que es una lista de palabras separadas por comas, y el modelo
+imita ese estilo — sin puntuación ni capitalización.
+
+Conclusión operativa: **la recuperación por enunciado no es una optimización, es un requisito.** Un glosario
+cosechado de los repos tendrá cientos de identificadores; metidos todos en el prompt, empeoran el resultado.
+Configuración que mejor midió hoy: 3 términos. Ese es el punto de partida hasta que exista recuperación.
+
 ## Siguientes pasos
 
 1. Ampliar el modelo de `custom_words` a entrada con reemplazo, frecuencia y origen.
